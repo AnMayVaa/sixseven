@@ -78,13 +78,13 @@ export default function GamePage({ onShowLeaderboard }) {
     }
   }, [phase])
 
-  // ── Play Again → back to READY (camera stays open) ──
+  // ── Play Again → back to Enter Name ──
   const handlePlayAgain = useCallback(() => {
-    resetTrackers()
-    playAgain() // sets phase → READY, camera stays open
-  }, [playAgain, resetTrackers])
+    stopCamera()
+    reset()
+  }, [reset, stopCamera])
 
-  // ── Change Name → full reset ──
+  // ── Change Name → same full reset ──
   const handleChangeName = useCallback(() => {
     stopCamera()
     reset()
