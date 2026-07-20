@@ -13,7 +13,7 @@ function generateConfetti(count = 60) {
   }))
 }
 
-export default function ResultScreen({ score, playerName, isSaving, saveError, onPlayAgain, onChangeName }) {
+export default function ResultScreen({ score, playerName, isSaving, saveError, onPlayAgain, onShowLeaderboard }) {
   const confetti = useRef(generateConfetti()).current
   const [shown, setShown] = useState(false)
 
@@ -95,8 +95,8 @@ export default function ResultScreen({ score, playerName, isSaving, saveError, o
         <button id="btn-play-again" className="btn btn-primary" onClick={onPlayAgain} style={{ width: '100%' }}>
           Play Again 🔥
         </button>
-        <button id="btn-change-name" className="btn btn-secondary" onClick={onChangeName} style={{ width: '100%' }}>
-          Change Name
+        <button id="btn-leaderboard" className="btn btn-secondary" onClick={onShowLeaderboard} style={{ width: '100%' }}>
+          🏆 Leaderboard
         </button>
       </div>
     </div>

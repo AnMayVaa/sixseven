@@ -10,7 +10,7 @@ export default function CameraView({
   phase, countdown,
   reps, timeLeft, playerName,
   isSaving, saveError,
-  onPlayAgain, onChangeName,
+  onPlayAgain, onShowLeaderboard,
 }) {
   const isPlaying    = phase === PHASE.PLAYING
   const isCountdown  = phase === PHASE.COUNTDOWN
@@ -69,7 +69,7 @@ export default function CameraView({
             isSaving={isSaving}
             saveError={saveError}
             onPlayAgain={onPlayAgain}
-            onChangeName={onChangeName}
+            onShowLeaderboard={onShowLeaderboard}
           />
         )}
       </div>

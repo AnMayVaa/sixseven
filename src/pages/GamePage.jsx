@@ -4,10 +4,10 @@ import NameEntry from '../components/NameEntry'
 import { useHandDetector } from '../hooks/useHandDetector'
 import { useGame, PHASE } from '../hooks/useGame'
 
-// How many frames of missing hands cancel the countdown
+// Frames of missing hands needed to cancel countdown
 const CANCEL_FRAMES = 8
 
-export default function GamePage() {
+export default function GamePage({ onShowLeaderboard }) {
   const game = useGame()
   const {
     phase, playerName, reps, timeLeft, countdown,
@@ -17,13 +17,11 @@ export default function GamePage() {
   } = game
 
   const isPlaying = phase === PHASE.PLAYING
-
-  // Track consecutive no-hand frames during countdown for cancel
   const noHandFramesRef = useRef(0)
 
   const detector = useHandDetector({
     onRep:    addRep,
-    onStable: startCountdown,  // fires after ~1.5s continuous hand presence
+    onStable: startCountdown,  // auto-fires after ~1.5s of hand presence
     active:   isPlaying,
     phase,
   })
@@ -36,17 +34,20 @@ export default function GamePage() {
     startCamera, stopCamera, resetTrackers,
   } = detector
 
-  // Start camera once name confirmed, stop on ENTER_NAME
+  // ── Open camera once name is confirmed, keep it open for the full session ──
+  const cameraOpenRef = useRef(false)
   useEffect(() => {
-    if (phase !== PHASE.ENTER_NAME) {
+    if (phase !== PHASE.ENTER_NAME && !cameraOpenRef.current) {
+      cameraOpenRef.current = true
       startCamera()
     }
-    return () => {
-      if (phase === PHASE.ENTER_NAME) stopCamera()
+    if (phase === PHASE.ENTER_NAME) {
+      cameraOpenRef.current = false
+      stopCamera()
     }
-  }, [phase === PHASE.ENTER_NAME])
+  }, [phase])
 
-  // Cancel countdown if both dots disappear
+  // ── Cancel countdown if both hands disappear ──
   useEffect(() => {
     if (phase !== PHASE.COUNTDOWN) {
       noHandFramesRef.current = 0
@@ -63,25 +64,27 @@ export default function GamePage() {
     }
   }, [phase, handCount])
 
-  // Save score when result phase begins
+  // ── Save score when result phase begins ──
   useEffect(() => {
     if (phase === PHASE.RESULT) {
       saveScore(playerName, reps)
     }
   }, [phase])
 
-  // Reset trackers on each new READY
+  // ── Reset wave trackers on each new READY ──
   useEffect(() => {
     if (phase === PHASE.READY) {
       resetTrackers()
     }
   }, [phase])
 
+  // ── Play Again → back to READY (camera stays open) ──
   const handlePlayAgain = useCallback(() => {
     resetTrackers()
-    playAgain()
+    playAgain() // sets phase → READY, camera stays open
   }, [playAgain, resetTrackers])
 
+  // ── Change Name → full reset ──
   const handleChangeName = useCallback(() => {
     stopCamera()
     reset()
@@ -133,7 +136,7 @@ export default function GamePage() {
           isSaving={isSaving}
           saveError={saveError}
           onPlayAgain={handlePlayAgain}
-          onChangeName={handleChangeName}
+          onShowLeaderboard={onShowLeaderboard}
         />
 
       </div>

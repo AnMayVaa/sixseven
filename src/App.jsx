@@ -32,7 +32,7 @@ export default function App() {
       </nav>
 
       {/* Page content */}
-      {activeTab === 'game'        && <GamePage />}
+      {activeTab === 'game'        && <GamePage onShowLeaderboard={() => setActiveTab('leaderboard')} />}
       {activeTab === 'leaderboard' && <LeaderboardPage />}
     </div>
   )
