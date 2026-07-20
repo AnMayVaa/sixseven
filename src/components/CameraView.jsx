@@ -1,42 +1,38 @@
-import { useEffect, useRef, forwardRef } from 'react'
 import Countdown from './Countdown'
 import GameOverlay from './GameOverlay'
 import ResultScreen from './ResultScreen'
 import { PHASE } from '../hooks/useGame'
 
-function CameraView({
-  videoRef,
-  canvasRef,
-  isLoading,
-  cameraError,
-  handsDetected,
-  phase,
-  countdown,
-  reps,
-  timeLeft,
-  playerName,
-  isSaving,
-  saveError,
-  onReady,
-  onPlayAgain,
-  onChangeName,
-}, _ref) {
-
-  const isPlaying   = phase === PHASE.PLAYING
-  const isCountdown = phase === PHASE.COUNTDOWN
-  const isResult    = phase === PHASE.RESULT
-  const isReady     = phase === PHASE.READY
+export default function CameraView({
+  videoRef, canvasRef,
+  isLoading, cameraError,
+  handCount, stableProgress,
+  phase, countdown,
+  reps, timeLeft, playerName,
+  isSaving, saveError,
+  onPlayAgain, onChangeName,
+}) {
+  const isPlaying    = phase === PHASE.PLAYING
+  const isCountdown  = phase === PHASE.COUNTDOWN
+  const isResult     = phase === PHASE.RESULT
+  const isReady      = phase === PHASE.READY
+  const handsPresent = handCount > 0
 
   return (
     <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 'var(--space-5)', alignItems: 'center' }}>
+
       {/* Camera container */}
-      <div className={`camera-container ${handsDetected ? 'hands-detected' : ''} ${isPlaying ? 'playing' : ''}`}>
+      <div className={`camera-container ${handsPresent ? 'hands-detected' : ''} ${isPlaying ? 'playing' : ''}`}>
+
+        {/* Loading */}
         {isLoading && (
           <div className="camera-loading">
             <div className="spinner" />
             <span>Loading hand detection…</span>
           </div>
         )}
+
+        {/* Camera error */}
         {cameraError && (
           <div className="camera-loading">
             <span style={{ fontSize: '2rem' }}>⚠️</span>
@@ -44,11 +40,11 @@ function CameraView({
           </div>
         )}
 
+        {/* Video + canvas */}
         <video
           ref={videoRef}
           className="camera-video"
-          playsInline
-          muted
+          playsInline muted
           style={{ display: isLoading || cameraError ? 'none' : 'block' }}
         />
         <canvas
@@ -57,17 +53,15 @@ function CameraView({
           style={{ display: isLoading || cameraError ? 'none' : 'block' }}
         />
 
-        {/* Hands detected badge */}
-        {!isLoading && !cameraError && (
-          <div className="hands-badge">
-            {handsDetected ? '✋ Hands Detected' : '👁 Looking…'}
-          </div>
+        {/* READY: "show hands" instruction overlay */}
+        {isReady && !isLoading && !cameraError && (
+          <ReadyOverlay handCount={handCount} stableProgress={stableProgress} />
         )}
 
-        {/* Countdown overlay */}
+        {/* COUNTDOWN: 3-2-1-GO! */}
         {isCountdown && <Countdown value={countdown} />}
 
-        {/* Result overlay */}
+        {/* RESULT */}
         {isResult && (
           <ResultScreen
             score={reps}
@@ -80,41 +74,72 @@ function CameraView({
         )}
       </div>
 
-      {/* Game overlay (timer + counter) shown during playing */}
+      {/* In-game HUD */}
       {isPlaying && (
         <GameOverlay reps={reps} timeLeft={timeLeft} playerName={playerName} />
       )}
 
-      {/* Ready section */}
-      {isReady && !isLoading && !cameraError && (
-        <div className="ready-section">
-          <div className="hand-icon">🙌</div>
-          <p style={{ fontSize: '1rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
-            Position both hands in front of the camera
-          </p>
-          <button
-            id="btn-ready"
-            className="btn btn-primary"
-            onClick={onReady}
-            disabled={!handsDetected}
-            style={{ opacity: handsDetected ? 1 : 0.5 }}
-          >
-            {handsDetected ? "I'm Ready! 🔥" : "Show your hands first…"}
-          </button>
-          {!handsDetected && (
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-              The button activates once hands are detected
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Player name tag during countdown */}
+      {/* Countdown player name tag */}
       {isCountdown && (
-        <p className="player-tag">Get ready, <span style={{ color: 'var(--purple-light)', fontWeight: 700 }}>{playerName}</span>!</p>
+        <p className="player-tag">
+          Get ready, <span style={{ color: 'var(--purple-light)', fontWeight: 700 }}>{playerName}</span>!
+        </p>
       )}
     </div>
   )
 }
 
-export default CameraView
+// ── READY overlay ─────────────────────────────────────────────
+function ReadyOverlay({ handCount, stableProgress }) {
+  const pct    = Math.round(stableProgress * 100)
+  const hasHands = handCount > 0
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0,
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'flex-end',
+      padding: 'var(--space-6)',
+      background: hasHands
+        ? 'linear-gradient(to top, rgba(6,6,8,0.85) 0%, transparent 60%)'
+        : 'rgba(6,6,8,0.6)',
+      zIndex: 5,
+      borderRadius: 'var(--radius-xl)',
+      pointerEvents: 'none',
+    }}>
+
+      {!hasHands ? (
+        // No hands yet
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-3)', paddingBottom: 'var(--space-4)' }}>
+          <div style={{ fontSize: '2.5rem', animation: 'float 2s ease-in-out infinite' }}>👐</div>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', textAlign: 'center' }}>
+            Show your open hands to the camera
+          </p>
+        </div>
+      ) : (
+        // Hands detected — show progress bar
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', alignItems: 'center' }}>
+          <p style={{ fontSize: '0.9rem', color: 'var(--cyan-light)', fontWeight: 600, textAlign: 'center' }}>
+            {pct < 100 ? `Hold still… ${pct}%` : '🔥 Starting!'}
+          </p>
+          {/* Progress bar */}
+          <div style={{
+            width: '80%', height: 6,
+            background: 'rgba(255,255,255,0.1)',
+            borderRadius: 'var(--radius-full)',
+            overflow: 'hidden',
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${pct}%`,
+              background: 'var(--grad-primary)',
+              borderRadius: 'var(--radius-full)',
+              transition: 'width 0.1s linear',
+              boxShadow: '0 0 10px rgba(6,182,212,0.6)',
+            }} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

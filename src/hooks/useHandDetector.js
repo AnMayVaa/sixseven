@@ -1,85 +1,78 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision'
 
-// Finger tip and PIP landmark indices
-const FINGER_TIPS = [4, 8, 12, 16, 20]
-const FINGER_PIPS = [3, 6, 10, 14, 18]
-
-// Count extended fingers on one hand's landmarks
-function countExtendedFingers(landmarks) {
-  if (!landmarks || landmarks.length < 21) return 0
-  let count = 0
-  // Thumb: compare x-distance from wrist
-  const thumbTip = landmarks[4]
-  const thumbMcp = landmarks[2]
-  const wrist = landmarks[0]
-  const isRightHand = thumbTip.x < wrist.x // mirrored for selfie
-  if (isRightHand) {
-    if (thumbTip.x < thumbMcp.x) count++
-  } else {
-    if (thumbTip.x > thumbMcp.x) count++
-  }
-  // Other 4 fingers: tip.y < pip.y means extended (higher on screen = lower y in normalized)
-  for (let i = 1; i < 5; i++) {
-    if (landmarks[FINGER_TIPS[i]].y < landmarks[FINGER_PIPS[i]].y) count++
-  }
-  return count
-}
-
-// ── Wave (peak detection) state per hand ──
-function createWaveTracker() {
+// Per-hand wave tracker
+function createTracker() {
   return {
-    yHistory: [],          // recent Y values of wrist
-    lastDirection: null,   // 'up' | 'down'
-    lastPeakTime: 0,       // timestamp of last counted rep
-    lastY: null,
+    yBuf: [],          // last N raw Y values for smoothing
+    lastDir: null,     // 'up' | 'down'
+    lastRepTime: 0,    // timestamp of last counted rep
+    lastRepY: null,    // Y position when last rep was counted
   }
 }
 
-const WAVE_DEBOUNCE_MS = 180   // min ms between reps per hand
-const WAVE_THRESHOLD   = 0.03  // min normalized-coord movement to count
+const BUF_SIZE      = 4      // frames to average for smooth Y
+const AMP_THRESH    = 0.035  // minimum Y travel from last rep to count new one
+const DEBOUNCE_MS   = 85     // min ms between reps per hand
+const STABLE_FRAMES = 80     // frames of continuous detection to auto-start (~1.5s at 30fps)
+const DECAY_RATE    = 2      // frames to subtract when hands lost
 
-export function useHandDetector({ onRep, active }) {
-  const videoRef         = useRef(null)
-  const canvasRef        = useRef(null)
-  const landmarkerRef    = useRef(null)
-  const rafRef           = useRef(null)
-  const streamRef        = useRef(null)
-  const waveTrackersRef  = useRef({ Left: createWaveTracker(), Right: createWaveTracker() })
-  const activeRef        = useRef(active)
-  const onRepRef         = useRef(onRep)
+export function useHandDetector({ onRep, onStable, active, phase }) {
+  const videoRef        = useRef(null)
+  const canvasRef       = useRef(null)
+  const landmarkerRef   = useRef(null)
+  const rafRef          = useRef(null)
+  const streamRef       = useRef(null)
+  const trackersRef     = useRef({ Left: createTracker(), Right: createTracker() })
 
-  const [isLoading, setIsLoading]         = useState(true)
-  const [cameraError, setCameraError]     = useState(null)
-  const [handsDetected, setHandsDetected] = useState(false)
+  // Stable-hand counting for auto-start
+  const stableCountRef    = useRef(0)
+  const stableFiredRef    = useRef(false)
 
-  // Keep refs current
-  useEffect(() => { activeRef.current = active }, [active])
-  useEffect(() => { onRepRef.current = onRep },   [onRep])
+  // Keep refs current without causing re-renders
+  const activeRef    = useRef(active)
+  const phaseRef     = useRef(phase)
+  const onRepRef     = useRef(onRep)
+  const onStableRef  = useRef(onStable)
 
-  // Initialize MediaPipe HandLandmarker
+  useEffect(() => { activeRef.current = active },   [active])
+  useEffect(() => { phaseRef.current = phase },     [phase])
+  useEffect(() => { onRepRef.current = onRep },     [onRep])
+  useEffect(() => { onStableRef.current = onStable }, [onStable])
+
+  const [isLoading, setIsLoading]       = useState(true)
+  const [cameraError, setCameraError]   = useState(null)
+  const [handCount, setHandCount]       = useState(0)
+  const [stableProgress, setStableProgress] = useState(0) // 0..1
+
+  // Reset stable counter whenever phase changes
+  useEffect(() => {
+    stableCountRef.current = 0
+    stableFiredRef.current = false
+    setStableProgress(0)
+  }, [phase])
+
+  // ── Init MediaPipe ──────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
     async function init() {
       try {
-        // Load mediapipe wasm
         const vision = await FilesetResolver.forVisionTasks(
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         )
-        const handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        const hl = await HandLandmarker.createFromOptions(vision, {
           baseOptions: {
-            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+            modelAssetPath:
+              'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
             delegate: 'GPU',
           },
           runningMode: 'VIDEO',
           numHands: 2,
         })
-        if (!cancelled) {
-          landmarkerRef.current = handLandmarker
-        }
+        if (!cancelled) landmarkerRef.current = hl
       } catch (err) {
         if (!cancelled) {
-          console.error('MediaPipe init error:', err)
+          console.error('MediaPipe init:', err)
           setCameraError('Failed to load hand detection model.')
         }
       }
@@ -88,7 +81,7 @@ export function useHandDetector({ onRep, active }) {
     return () => { cancelled = true }
   }, [])
 
-  // Open camera
+  // ── Camera ──────────────────────────────────────────────────
   const startCamera = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -101,14 +94,12 @@ export function useHandDetector({ onRep, active }) {
         await videoRef.current.play()
       }
       setIsLoading(false)
-    } catch (err) {
-      console.error('Camera error:', err)
+    } catch {
       setCameraError('Camera access denied. Please allow camera and refresh.')
       setIsLoading(false)
     }
   }, [])
 
-  // Stop camera
   const stopCamera = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
     if (streamRef.current) {
@@ -117,40 +108,54 @@ export function useHandDetector({ onRep, active }) {
     }
   }, [])
 
-  // Detection loop
+  // ── Detection loop ──────────────────────────────────────────
   useEffect(() => {
-    if (isLoading || cameraError || !videoRef.current) return
-
-    let lastTimestamp = -1
+    if (isLoading || cameraError) return
 
     const detect = () => {
       rafRef.current = requestAnimationFrame(detect)
       const video  = videoRef.current
       const canvas = canvasRef.current
-      if (!video || !canvas || !landmarkerRef.current) return
-      if (video.readyState < 2) return
+      if (!video || !canvas || !landmarkerRef.current || video.readyState < 2) return
 
-      const now = performance.now()
-      if (now === lastTimestamp) return
-      lastTimestamp = now
-
-      // Run detection
+      const now     = performance.now()
       const results = landmarkerRef.current.detectForVideo(video, now)
-      const hasHands = results.landmarks && results.landmarks.length > 0
-      setHandsDetected(hasHands)
+      const count   = results.landmarks?.length ?? 0
+      setHandCount(count)
 
-      // Draw on canvas
+      // Canvas setup
       const ctx = canvas.getContext('2d')
       canvas.width  = video.videoWidth  || 640
       canvas.height = video.videoHeight || 480
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-      if (hasHands) {
-        results.landmarks.forEach((landmarks, handIdx) => {
-          const handedness = results.handednesses[handIdx]?.[0]?.categoryName || 'Right'
-          drawHandSkeleton(ctx, landmarks, canvas.width, canvas.height, handedness)
+      const currentPhase = phaseRef.current
 
-          // Wave detection — only during active game
+      // ── Auto-start stable counting (READY phase only) ──
+      if (currentPhase === 'READY') {
+        if (count > 0) {
+          stableCountRef.current = Math.min(stableCountRef.current + 1, STABLE_FRAMES)
+        } else {
+          stableCountRef.current = Math.max(0, stableCountRef.current - DECAY_RATE)
+        }
+        const prog = stableCountRef.current / STABLE_FRAMES
+        setStableProgress(prog)
+        if (prog >= 1 && !stableFiredRef.current) {
+          stableFiredRef.current = true
+          onStableRef.current?.()
+        }
+      }
+
+      // ── Draw dots + wave detection ──
+      if (count > 0) {
+        results.landmarks.forEach((landmarks, i) => {
+          const handedness = results.handednesses[i]?.[0]?.categoryName ?? 'Right'
+
+          // Draw progress ring during READY
+          const prog = currentPhase === 'READY' ? stableCountRef.current / STABLE_FRAMES : -1
+          drawHandDot(ctx, landmarks, canvas.width, canvas.height, handedness, prog)
+
+          // Wave rep detection during PLAYING
           if (activeRef.current) {
             detectWave(landmarks, handedness, now)
           }
@@ -162,90 +167,122 @@ export function useHandDetector({ onRep, active }) {
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
   }, [isLoading, cameraError])
 
-  // Wave peak detection per hand
+  // ── Wave detection ──────────────────────────────────────────
   function detectWave(landmarks, handedness, now) {
-    const wrist = landmarks[0]
-    const tracker = waveTrackersRef.current[handedness] || waveTrackersRef.current['Right']
-    const y = wrist.y
+    const tracker = trackersRef.current[handedness] ?? trackersRef.current['Right']
+    const rawY    = landmarks[0].y // wrist Y
 
-    if (tracker.lastY === null) {
-      tracker.lastY = y
-      return
-    }
+    // Push to buffer
+    tracker.yBuf.push(rawY)
+    if (tracker.yBuf.length > BUF_SIZE) tracker.yBuf.shift()
+    if (tracker.yBuf.length < 2) return
 
-    const dy = y - tracker.lastY
-    tracker.lastY = y
+    // Smoothed Y = average of buffer
+    const avgY = tracker.yBuf.reduce((a, b) => a + b, 0) / tracker.yBuf.length
+    const prev = tracker.yBuf[tracker.yBuf.length - 2]
 
-    let direction = null
-    if (Math.abs(dy) > WAVE_THRESHOLD / 5) {
-      direction = dy < 0 ? 'up' : 'down' // in normalized coords, smaller y = higher on screen
-    }
+    const dy  = avgY - prev
+    const dir = dy < 0 ? 'up' : dy > 0 ? 'down' : null
+    if (!dir) return
 
-    if (direction && direction !== tracker.lastDirection) {
-      // Direction change = one wave rep (peak or trough detected)
-      if (now - tracker.lastPeakTime > WAVE_DEBOUNCE_MS) {
-        tracker.lastDirection = direction
-        tracker.lastPeakTime = now
+    // Count rep on direction change with amplitude + debounce guards
+    if (dir !== tracker.lastDir) {
+      const travelOk  = tracker.lastRepY === null || Math.abs(rawY - tracker.lastRepY) > AMP_THRESH
+      const timeOk    = now - tracker.lastRepTime > DEBOUNCE_MS
+      if (travelOk && timeOk) {
+        tracker.lastDir     = dir
+        tracker.lastRepTime = now
+        tracker.lastRepY    = rawY
         onRepRef.current?.()
       }
-    } else if (direction) {
-      tracker.lastDirection = direction
+    } else {
+      tracker.lastDir = dir
     }
   }
 
-  // Reset wave trackers between games
+  // ── Reset between games ──────────────────────────────────────
   const resetTrackers = useCallback(() => {
-    waveTrackersRef.current = { Left: createWaveTracker(), Right: createWaveTracker() }
+    trackersRef.current   = { Left: createTracker(), Right: createTracker() }
+    stableCountRef.current = 0
+    stableFiredRef.current = false
+    setStableProgress(0)
   }, [])
 
   return {
-    videoRef,
-    canvasRef,
-    isLoading,
-    cameraError,
-    handsDetected,
-    startCamera,
-    stopCamera,
-    resetTrackers,
+    videoRef, canvasRef,
+    isLoading, cameraError,
+    stableProgress,
+    startCamera, stopCamera, resetTrackers,
+    _handCount: handCount,
   }
 }
 
-// ── Draw hand skeleton on canvas ──
-function drawHandSkeleton(ctx, landmarks, w, h, handedness) {
-  const CONNECTIONS = [
-    [0,1],[1,2],[2,3],[3,4],         // thumb
-    [0,5],[5,6],[6,7],[7,8],         // index
-    [0,9],[9,10],[10,11],[11,12],    // middle
-    [0,13],[13,14],[14,15],[15,16],  // ring
-    [0,17],[17,18],[18,19],[19,20],  // pinky
-    [5,9],[9,13],[13,17],            // palm
-  ]
+// ── Draw glowing dot + optional progress arc ─────────────────
+function drawHandDot(ctx, landmarks, w, h, handedness, stableProgress) {
+  const wrist = landmarks[0]
+  const x = wrist.x * w
+  const y = wrist.y * h
 
-  const color = handedness === 'Left' ? '#06b6d4' : '#a855f7'
-  const tipColor = '#ffffff'
+  const isCyan  = handedness === 'Left'
+  const color   = isCyan ? '#22d3ee' : '#c084fc'
+  const glow    = isCyan ? 'rgba(34,211,238,0.35)' : 'rgba(192,132,252,0.35)'
 
-  // Draw connections
-  ctx.strokeStyle = color
-  ctx.lineWidth = 2
-  ctx.globalAlpha = 0.7
-  CONNECTIONS.forEach(([a, b]) => {
-    const pa = landmarks[a]
-    const pb = landmarks[b]
+  ctx.save()
+
+  // Outer glow halo
+  ctx.beginPath()
+  ctx.arc(x, y, 26, 0, Math.PI * 2)
+  ctx.fillStyle = glow
+  ctx.shadowBlur = 30
+  ctx.shadowColor = color
+  ctx.fill()
+
+  // Mid ring
+  ctx.beginPath()
+  ctx.arc(x, y, 14, 0, Math.PI * 2)
+  ctx.fillStyle = color
+  ctx.globalAlpha = 0.3
+  ctx.fill()
+  ctx.globalAlpha = 1
+
+  // Core dot
+  ctx.beginPath()
+  ctx.arc(x, y, 9, 0, Math.PI * 2)
+  ctx.fillStyle = color
+  ctx.shadowBlur = 12
+  ctx.shadowColor = color
+  ctx.fill()
+
+  // White center
+  ctx.beginPath()
+  ctx.arc(x, y, 3.5, 0, Math.PI * 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.shadowBlur = 0
+  ctx.fill()
+
+  // Progress arc (fills clockwise during READY)
+  if (stableProgress >= 0) {
+    const r     = 34
+    const start = -Math.PI / 2
+    const end   = start + stableProgress * Math.PI * 2
     ctx.beginPath()
-    ctx.moveTo(pa.x * w, pa.y * h)
-    ctx.lineTo(pb.x * w, pb.y * h)
+    ctx.arc(x, y, r, start, end)
+    ctx.strokeStyle = color
+    ctx.lineWidth   = 3
+    ctx.shadowBlur  = 10
+    ctx.shadowColor = color
+    ctx.globalAlpha = 0.9
     ctx.stroke()
-  })
+    ctx.globalAlpha = 1
 
-  // Draw landmarks
-  ctx.globalAlpha = 1
-  landmarks.forEach((lm, idx) => {
-    const isTip = FINGER_TIPS.includes(idx)
+    // Background track
     ctx.beginPath()
-    ctx.arc(lm.x * w, lm.y * h, isTip ? 5 : 3, 0, Math.PI * 2)
-    ctx.fillStyle = isTip ? tipColor : color
-    ctx.fill()
-  })
+    ctx.arc(x, y, r, end, start + Math.PI * 2)
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)'
+    ctx.lineWidth   = 3
+    ctx.shadowBlur  = 0
+    ctx.stroke()
+  }
 
-  ctx.globalAlpha = 1
+  ctx.restore()
 }
