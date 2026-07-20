@@ -1,51 +1,67 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision'
 
+// Fingertip landmark indices: thumb, index, middle, ring, pinky
+const FINGERTIPS = [4, 8, 12, 16, 20]
+
+// Average Y of all 5 fingertips — stays visible even when the open
+// hand hides or lowers the wrist out of frame during fast waving
+function fingertipCentroidY(landmarks) {
+  return FINGERTIPS.reduce((sum, i) => sum + landmarks[i].y, 0) / FINGERTIPS.length
+}
+
+// Average X+Y centroid used as the draw anchor
+function fingertipCentroid(landmarks) {
+  const x = FINGERTIPS.reduce((s, i) => s + landmarks[i].x, 0) / FINGERTIPS.length
+  const y = FINGERTIPS.reduce((s, i) => s + landmarks[i].y, 0) / FINGERTIPS.length
+  return { x, y }
+}
+
 // Per-hand wave tracker
 function createTracker() {
   return {
-    yBuf: [],          // last N raw Y values for smoothing
-    lastDir: null,     // 'up' | 'down'
-    lastRepTime: 0,    // timestamp of last counted rep
-    lastRepY: null,    // Y position when last rep was counted
+    yBuf: [],        // last N raw Y values for smoothing
+    lastDir: null,   // 'up' | 'down'
+    lastRepTime: 0,  // ms timestamp of last counted rep
+    lastRepY: null,  // fingertip centroid Y when last rep was counted
   }
 }
 
-const BUF_SIZE      = 4      // frames to average for smooth Y
-const AMP_THRESH    = 0.035  // minimum Y travel from last rep to count new one
+const BUF_SIZE      = 4      // frames averaged for smooth Y
+const AMP_THRESH    = 0.035  // min Y travel from last rep to count a new one
 const DEBOUNCE_MS   = 85     // min ms between reps per hand
-const STABLE_FRAMES = 80     // frames of continuous detection to auto-start (~1.5s at 30fps)
-const DECAY_RATE    = 2      // frames to subtract when hands lost
+const STABLE_FRAMES = 80     // frames of hands-present to auto-start (~1.5s @ 30fps)
+const DECAY_RATE    = 2      // stable-counter decay per no-hand frame
 
 export function useHandDetector({ onRep, onStable, active, phase }) {
-  const videoRef        = useRef(null)
-  const canvasRef       = useRef(null)
-  const landmarkerRef   = useRef(null)
-  const rafRef          = useRef(null)
-  const streamRef       = useRef(null)
-  const trackersRef     = useRef({ Left: createTracker(), Right: createTracker() })
+  const videoRef       = useRef(null)
+  const canvasRef      = useRef(null)
+  const landmarkerRef  = useRef(null)
+  const rafRef         = useRef(null)
+  const streamRef      = useRef(null)
+  const trackersRef    = useRef({ Left: createTracker(), Right: createTracker() })
 
   // Stable-hand counting for auto-start
-  const stableCountRef    = useRef(0)
-  const stableFiredRef    = useRef(false)
+  const stableCountRef = useRef(0)
+  const stableFiredRef = useRef(false)
 
-  // Keep refs current without causing re-renders
-  const activeRef    = useRef(active)
-  const phaseRef     = useRef(phase)
-  const onRepRef     = useRef(onRep)
-  const onStableRef  = useRef(onStable)
+  // Live refs — no re-render on update
+  const activeRef   = useRef(active)
+  const phaseRef    = useRef(phase)
+  const onRepRef    = useRef(onRep)
+  const onStableRef = useRef(onStable)
 
   useEffect(() => { activeRef.current = active },   [active])
   useEffect(() => { phaseRef.current = phase },     [phase])
   useEffect(() => { onRepRef.current = onRep },     [onRep])
   useEffect(() => { onStableRef.current = onStable }, [onStable])
 
-  const [isLoading, setIsLoading]       = useState(true)
-  const [cameraError, setCameraError]   = useState(null)
-  const [handCount, setHandCount]       = useState(0)
+  const [isLoading, setIsLoading]           = useState(true)
+  const [cameraError, setCameraError]       = useState(null)
+  const [handCount, setHandCount]           = useState(0)
   const [stableProgress, setStableProgress] = useState(0) // 0..1
 
-  // Reset stable counter whenever phase changes
+  // Reset stable counter on every phase change
   useEffect(() => {
     stableCountRef.current = 0
     stableFiredRef.current = false
@@ -123,7 +139,7 @@ export function useHandDetector({ onRep, onStable, active, phase }) {
       const count   = results.landmarks?.length ?? 0
       setHandCount(count)
 
-      // Canvas setup
+      // Setup canvas
       const ctx = canvas.getContext('2d')
       canvas.width  = video.videoWidth  || 640
       canvas.height = video.videoHeight || 480
@@ -131,7 +147,7 @@ export function useHandDetector({ onRep, onStable, active, phase }) {
 
       const currentPhase = phaseRef.current
 
-      // ── Auto-start stable counting (READY phase only) ──
+      // ── Auto-start: count stable frames in READY phase ──
       if (currentPhase === 'READY') {
         if (count > 0) {
           stableCountRef.current = Math.min(stableCountRef.current + 1, STABLE_FRAMES)
@@ -150,12 +166,8 @@ export function useHandDetector({ onRep, onStable, active, phase }) {
       if (count > 0) {
         results.landmarks.forEach((landmarks, i) => {
           const handedness = results.handednesses[i]?.[0]?.categoryName ?? 'Right'
-
-          // Draw progress ring during READY
           const prog = currentPhase === 'READY' ? stableCountRef.current / STABLE_FRAMES : -1
-          drawHandDot(ctx, landmarks, canvas.width, canvas.height, handedness, prog)
-
-          // Wave rep detection during PLAYING
+          drawHandDots(ctx, landmarks, canvas.width, canvas.height, handedness, prog)
           if (activeRef.current) {
             detectWave(landmarks, handedness, now)
           }
@@ -167,28 +179,26 @@ export function useHandDetector({ onRep, onStable, active, phase }) {
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
   }, [isLoading, cameraError])
 
-  // ── Wave detection ──────────────────────────────────────────
+  // ── Wave detection using fingertip centroid Y ──────────────
   function detectWave(landmarks, handedness, now) {
     const tracker = trackersRef.current[handedness] ?? trackersRef.current['Right']
-    const rawY    = landmarks[0].y // wrist Y
 
-    // Push to buffer
+    // Track average Y of fingertips — reliable with open hand at speed
+    const rawY = fingertipCentroidY(landmarks)
+
     tracker.yBuf.push(rawY)
     if (tracker.yBuf.length > BUF_SIZE) tracker.yBuf.shift()
     if (tracker.yBuf.length < 2) return
 
-    // Smoothed Y = average of buffer
     const avgY = tracker.yBuf.reduce((a, b) => a + b, 0) / tracker.yBuf.length
     const prev = tracker.yBuf[tracker.yBuf.length - 2]
-
-    const dy  = avgY - prev
-    const dir = dy < 0 ? 'up' : dy > 0 ? 'down' : null
+    const dy   = avgY - prev
+    const dir  = dy < 0 ? 'up' : dy > 0 ? 'down' : null
     if (!dir) return
 
-    // Count rep on direction change with amplitude + debounce guards
     if (dir !== tracker.lastDir) {
-      const travelOk  = tracker.lastRepY === null || Math.abs(rawY - tracker.lastRepY) > AMP_THRESH
-      const timeOk    = now - tracker.lastRepTime > DEBOUNCE_MS
+      const travelOk = tracker.lastRepY === null || Math.abs(rawY - tracker.lastRepY) > AMP_THRESH
+      const timeOk   = now - tracker.lastRepTime > DEBOUNCE_MS
       if (travelOk && timeOk) {
         tracker.lastDir     = dir
         tracker.lastRepTime = now
@@ -200,9 +210,9 @@ export function useHandDetector({ onRep, onStable, active, phase }) {
     }
   }
 
-  // ── Reset between games ──────────────────────────────────────
+  // ── Reset between games ─────────────────────────────────────
   const resetTrackers = useCallback(() => {
-    trackersRef.current   = { Left: createTracker(), Right: createTracker() }
+    trackersRef.current  = { Left: createTracker(), Right: createTracker() }
     stableCountRef.current = 0
     stableFiredRef.current = false
     setStableProgress(0)
@@ -217,71 +227,84 @@ export function useHandDetector({ onRep, onStable, active, phase }) {
   }
 }
 
-// ── Draw glowing dot + optional progress arc ─────────────────
-function drawHandDot(ctx, landmarks, w, h, handedness, stableProgress) {
-  const wrist = landmarks[0]
-  const x = wrist.x * w
-  const y = wrist.y * h
+// ── Draw 5 fingertip dots + centroid glow + optional progress arc ──
+function drawHandDots(ctx, landmarks, w, h, handedness, stableProgress) {
+  const isCyan = handedness === 'Left'
+  const color  = isCyan ? '#22d3ee' : '#c084fc'
+  const glow   = isCyan ? 'rgba(34,211,238,0.3)' : 'rgba(192,132,252,0.3)'
 
-  const isCyan  = handedness === 'Left'
-  const color   = isCyan ? '#22d3ee' : '#c084fc'
-  const glow    = isCyan ? 'rgba(34,211,238,0.35)' : 'rgba(192,132,252,0.35)'
+  // Centroid of fingertips for progress arc anchor
+  const c  = fingertipCentroid(landmarks)
+  const cx = c.x * w
+  const cy = c.y * h
 
   ctx.save()
 
-  // Outer glow halo
-  ctx.beginPath()
-  ctx.arc(x, y, 26, 0, Math.PI * 2)
-  ctx.fillStyle = glow
-  ctx.shadowBlur = 30
-  ctx.shadowColor = color
-  ctx.fill()
+  // ── 5 fingertip dots ──
+  FINGERTIPS.forEach(idx => {
+    const lm = landmarks[idx]
+    const fx = lm.x * w
+    const fy = lm.y * h
 
-  // Mid ring
+    // Glow halo
+    ctx.beginPath()
+    ctx.arc(fx, fy, 10, 0, Math.PI * 2)
+    ctx.fillStyle = glow
+    ctx.shadowBlur = 14
+    ctx.shadowColor = color
+    ctx.fill()
+
+    // Core dot
+    ctx.beginPath()
+    ctx.arc(fx, fy, 6, 0, Math.PI * 2)
+    ctx.fillStyle = color
+    ctx.shadowBlur = 8
+    ctx.shadowColor = color
+    ctx.fill()
+
+    // White center
+    ctx.beginPath()
+    ctx.arc(fx, fy, 2.5, 0, Math.PI * 2)
+    ctx.fillStyle = '#ffffff'
+    ctx.shadowBlur = 0
+    ctx.fill()
+  })
+
+  // ── Soft centroid glow (tracking reference) ──
+  ctx.shadowBlur = 0
+  ctx.globalAlpha = 0.12
   ctx.beginPath()
-  ctx.arc(x, y, 14, 0, Math.PI * 2)
+  ctx.arc(cx, cy, 30, 0, Math.PI * 2)
   ctx.fillStyle = color
-  ctx.globalAlpha = 0.3
   ctx.fill()
   ctx.globalAlpha = 1
 
-  // Core dot
-  ctx.beginPath()
-  ctx.arc(x, y, 9, 0, Math.PI * 2)
-  ctx.fillStyle = color
-  ctx.shadowBlur = 12
-  ctx.shadowColor = color
-  ctx.fill()
-
-  // White center
-  ctx.beginPath()
-  ctx.arc(x, y, 3.5, 0, Math.PI * 2)
-  ctx.fillStyle = '#ffffff'
-  ctx.shadowBlur = 0
-  ctx.fill()
-
-  // Progress arc (fills clockwise during READY)
+  // ── Progress arc around fingertip centroid (READY only) ──
   if (stableProgress >= 0) {
-    const r     = 34
+    const r     = 42
     const start = -Math.PI / 2
     const end   = start + stableProgress * Math.PI * 2
-    ctx.beginPath()
-    ctx.arc(x, y, r, start, end)
-    ctx.strokeStyle = color
-    ctx.lineWidth   = 3
-    ctx.shadowBlur  = 10
-    ctx.shadowColor = color
-    ctx.globalAlpha = 0.9
-    ctx.stroke()
-    ctx.globalAlpha = 1
 
     // Background track
     ctx.beginPath()
-    ctx.arc(x, y, r, end, start + Math.PI * 2)
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)'
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)'
     ctx.lineWidth   = 3
     ctx.shadowBlur  = 0
     ctx.stroke()
+
+    // Filled progress
+    if (stableProgress > 0) {
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, start, end)
+      ctx.strokeStyle = color
+      ctx.lineWidth   = 3.5
+      ctx.shadowBlur  = 12
+      ctx.shadowColor = color
+      ctx.globalAlpha = 0.95
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
   }
 
   ctx.restore()
