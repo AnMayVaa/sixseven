@@ -31,9 +31,17 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Page content */}
-      {activeTab === 'game'        && <GamePage onShowLeaderboard={() => setActiveTab('leaderboard')} />}
-      {activeTab === 'leaderboard' && <LeaderboardPage />}
+      {/*
+        IMPORTANT: Both pages stay mounted at all times so GamePage state
+        (camera, phase, score) is never destroyed when switching tabs.
+        CSS `display:contents` passes through layout, `display:none` hides.
+      */}
+      <div style={{ display: activeTab === 'game' ? 'contents' : 'none' }}>
+        <GamePage onShowLeaderboard={() => setActiveTab('leaderboard')} />
+      </div>
+      <div style={{ display: activeTab === 'leaderboard' ? 'contents' : 'none' }}>
+        <LeaderboardPage />
+      </div>
     </div>
   )
 }
