@@ -118,10 +118,14 @@ export function useHandDetector({ onRep, onStable, active, phase }) {
 
   const stopCamera = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = null
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop())
       streamRef.current = null
     }
+    // Reset to loading=true so detection loop useEffect re-fires on next startCamera
+    setIsLoading(true)
+    setCameraError(null)
   }, [])
 
   // ── Detection loop ──────────────────────────────────────────
