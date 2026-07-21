@@ -338,6 +338,9 @@ body::after {
   align-items: center;
   padding: var(--space-8) var(--space-4);
 }
+@media (max-width: 600px) {
+  .tab-content { padding: var(--space-4) var(--space-3); }
+}
 
 /* ── Logo / header ── */
 .logo {
@@ -399,6 +402,9 @@ body::after {
   align-items: center;
   gap: var(--space-6);
 }
+@media (max-width: 600px) {
+  .game-page { gap: var(--space-3); }
+}
 
 /* ── Camera view ── */
 .camera-container {
@@ -411,6 +417,14 @@ body::after {
   aspect-ratio: 4/3;
   border: 2px solid var(--glass-border);
   transition: border-color var(--transition-slow), box-shadow var(--transition-slow);
+}
+/* On mobile, cap camera height so it doesn't push content off-screen */
+@media (max-width: 600px) {
+  .camera-container {
+    aspect-ratio: unset;
+    height: min(56vw, 58vh);
+    border-radius: var(--radius-lg);
+  }
 }
 .camera-container.hands-detected {
   border-color: var(--cyan);
@@ -598,6 +612,22 @@ body::after {
   z-index: 20;
   border-radius: var(--radius-xl);
   animation: fadeIn 0.5s ease;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+/* On mobile: cover the FULL screen so nothing gets cropped */
+@media (max-width: 600px) {
+  .result-screen {
+    position: fixed;
+    inset: 0;
+    border-radius: 0;
+    z-index: 200;
+    justify-content: flex-start;
+    padding-top: max(env(safe-area-inset-top), var(--space-8));
+    padding-bottom: max(env(safe-area-inset-bottom), var(--space-6));
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
 }
 .result-score-label {
   font-size: 0.85rem;
@@ -607,7 +637,7 @@ body::after {
   letter-spacing: 0.12em;
 }
 .result-score-number {
-  font-size: clamp(4rem, 15vw, 7rem);
+  font-size: clamp(3.5rem, 15vw, 7rem);
   font-weight: 900;
   background: var(--grad-primary);
   -webkit-background-clip: text;
@@ -634,8 +664,11 @@ body::after {
   flex-direction: column;
   gap: var(--space-3);
   width: 100%;
-  max-width: 280px;
-  padding: 0 var(--space-4);
+  max-width: 320px;
+  padding: 0;
+}
+@media (max-width: 600px) {
+  .result-actions { max-width: 100%; }
 }
 .result-name { font-size: 1.1rem; color: var(--purple-light); font-weight: 700; }
 .result-confetti {

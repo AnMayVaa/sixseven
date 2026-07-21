@@ -109,13 +109,14 @@ export default function GamePage({ onShowLeaderboard }) {
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           width: '100%', maxWidth: 640,
         }}>
-          <h2 style={{ fontSize: '1.8rem', fontWeight: 900 }}>
+          <h2 style={{ fontSize: 'clamp(1.2rem, 5vw, 1.8rem)', fontWeight: 900 }}>
             <span className="gradient-text">6·7</span>
           </h2>
           <button
             id="btn-change-name-top"
             className="btn btn-ghost"
             onClick={handleChangeName}
+            style={{ fontSize: 'clamp(0.75rem, 3vw, 0.9rem)', padding: '6px 12px' }}
           >
             ← Change name
           </button>
